@@ -1,4 +1,9 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Small utility to auto-configure Icinga2 node (master/satelite/client) and
+establish API connection
+"""
 import os
 import pwd
 import grp
@@ -15,57 +20,75 @@ requests.packages.urllib3.disable_warnings()
 CERT_DIR = '/var/lib/icinga2/certs'
 OWNER = 'icinga'
 GROUP = 'icinga'
+PORT = '5665'
 ZONE_FILE = '/etc/icinga2/zones.conf'
+API_USER_FILE = '/etc/icinga2/conf.d/api-debug-user.conf'
 HEADERS = {'Accept': 'application/json'}
 LOG_FILE = '/var/log/icinga2_api_config.log'
 
 
 def args_check(args=None):
+    """
+        Parse input arguments
+    """
+    description = """ Small utility to auto-configure Icinga2 node
+     (master/satelite/client) and establish API connection
+    """
     parser = \
-        argparse.ArgumentParser(description='Register Host to the Icinga2')
+        argparse.ArgumentParser(description=description)
 
-    parser.add_argument('--master',
-                        help='Resolvable fqdn of the master',
-                        required=False, action='store_true')
-    parser.add_argument('--client',
-                        help='Resolvable fqdn of the client',
-                        required=False, action='store_true')
-    parser.add_argument('--master-host',
-                        help='Icinga2 master host to establish connection with',
-                        required=False, default='')
-    parser.add_argument('--port',
-                        help='The port the master is connectable on',
-                        required=False, default='')
-    parser.add_argument('--client-host',
-                        help='Configured client host name',
-                        required=False, default='')
-    parser.add_argument('--api-user',
-                        help='API Request user',
-                        required=False, default='')
-    parser.add_argument('--api-password',
-                        help='API Request user key',
-                        required=False, default='')
-    parser.add_argument('--enable-global',
-                        help='Enables global templates configuration',
-                        required=False, action='store_true')
-    parser.add_argument('--disable-checker',
-                        help='Disables checker Icinga2 feature',
-                        required=False, action='store_true')
-    parser.add_argument('--disable-confd',
-                        help='Disables conf.d directory',
-                        required=False, action='store_true')
+    subparsers = parser.add_subparsers(help='sub-command help')
+
+    master_parser = subparsers.add_parser('setup_master', help='b help')
+    master_parser.set_defaults(mode='master')
+    api_listener_help = """ Bind the ApiListener object to a specific
+     host/port. Format: <address>,<port>
+    """
+    master_parser.add_argument('--api-listener', help=api_listener_help)
+
+    client_parser = subparsers.add_parser('setup_client', help='client help')
+    client_parser.set_defaults(mode='client')
+    master_host_help = " Icinga2 master host to establish connection with "
+    client_parser.add_argument('--master-host',
+                               help=master_host_help,
+                               required=True, default='')
+    client_parser.add_argument('--port',
+                               help='The port the master is connectable on',
+                               required=False, default='')
+    common_name_help = """Configured client common name. By convention this
+     should be the host’s FQDN"""
+    client_parser.add_argument('--common-name',
+                               help=common_name_help,
+                               required=True, default='')
+    client_parser.add_argument('--api-user',
+                               help='API Request user',
+                               required=True, default='')
+    client_parser.add_argument('--api-password',
+                               help='API Request user key',
+                               required=True, default='')
+    endpoint_help = """If client should connect to the master node, use
+     following format: <master-host>,<master-address>,<port>"""
+    client_parser.add_argument('--endpoint',
+                               help=endpoint_help,
+                               required=True, default='')
+    client_parser.add_argument('--enable-global',
+                               help='Enables global templates configuration',
+                               required=False, action='store_true')
+    client_parser.add_argument('--disable-checker',
+                               help='Disables checker Icinga2 feature',
+                               required=False, action='store_true')
+    client_parser.add_argument('--disable-confd',
+                               help='Disables conf.d directory',
+                               required=False, action='store_true')
+    client_parser.add_argument('--add-debug-api',
+                               help='Add api debug user for the client',
+                               required=False, action='store_true')
+    client_parser.add_argument('--debug-user-pass',
+                               help='Debug user password',
+                               required=False, default='')
+
     results = parser.parse_args(args)
-    return (results.master,
-            results.client,
-            results.satelite,
-            results.master_host,
-            results.port,
-            results.client_host,
-            results.api_user,
-            results.api_key,
-            results.enable_global,
-            results.disable_checker,
-            results.disable_confd)
+    return results
 
 
 def create_dir(path):
@@ -77,7 +100,8 @@ def create_dir(path):
             os.makedirs(path)
         except OSError as err:
             if err.errno != errno.EEXIST:
-                logging.critical("Failed to create directory. Error:\n{0}".format(err))
+                msg = "Failed to create directory. Error:\n{0}".format(err)
+                logging.critical(msg)
                 raise
 
 
@@ -99,16 +123,22 @@ def restart_icinga():
         call(command, shell=False)
         logging.info("Icinga2 daemon restarted")
     except Exception as err:
-        logging.critical("Failed to restart Icinga2 daemon. Error: \n{0}".format(err))
+        msg = "Failed to restart Icinga2 daemon. Error: \n{0}".format(err)
+        logging.critical(msg)
+        raise
 
 
 def enable_global_templates(path):
     """
         Configure global templates usage
     """
-    conf = '\nobject Zone "global-templates" {\n\tglobal = true\n}'
+    conf = """
+    object Zone "global-templates" {
+        global = true
+    }"""
     with open(path, "a") as zonefile:
         zonefile.write(conf)
+        zonefile.close()
 
 
 def disable_checker_feature():
@@ -122,7 +152,9 @@ def disable_checker_feature():
         call(command, shell=False)
         logging.info("checker feature disabled")
     except Exception as err:
-        logging.critical("Failed to disable cherker feature. Error: \n{0}".format(err))
+        msg = "Failed to disable cherker feature. Error: \n{0}".format(err)
+        logging.critical(msg)
+        raise
 
 
 def disable_confd():
@@ -138,6 +170,22 @@ def disable_confd():
         logging.info("Disabled conf.d")
     except Exception as err:
         logging.critical("Failed to disable conf.d. Error: \n{0}".format(err))
+        raise
+
+
+def configure_api_debug_user(path, password):
+    """
+        Configures api user for remote debugging
+    """
+    conf = """
+    object ApiUser "root" {
+        password = "{0}"
+        permissions = ["*"]
+    }
+    """.format(password)
+    with open(path, "a+") as api_user_file:
+        api_user_file.write(conf)
+        api_user_file.close()
 
 
 def get_ticket(master, port, user, key, fqdn):
@@ -160,27 +208,33 @@ def get_ticket(master, port, user, key, fqdn):
     ticket = ''
     for result in results:
         try:
-            logging.info("Getting ticket from Icinga2 master: {0}".format(master))
+            msg = "Getting ticket from Icinga2 master: {0}".format(master)
+            logging.info(msg)
             ticket = result['ticket']
         except KeyError:
-            logging.critical("Failed to get ticket. Response from Icinga2 \
-                             master: {}".format(results))
+            msg = "Failed to get ticket. Response from Icinga2 \
+                             master: {0}".format(results)
+            logging.critical(msg)
             # Exit script
             raise
     return ticket
 
 
-def configure_master():
+def configure_master(api_listener):
     """
     Configure host in 'master' mode
     """
     # Configureation command
     node_setup_command = ["/usr/bin/icinga2", "node", "setup", "--master"]
+    if api_listener:
+        node_setup_command.extend(["--listener", api_listener])
     try:
         call(node_setup_command, shell=False)
         logging.info("Host successfully promoted to master")
     except Exception as err:
-        logging.critical("Failed to promote. Error: \n{0}".format(err))
+        msg = "Failed to promote to master. Error: \n{0}".format(err)
+        logging.critical(msg)
+        raise
 
 
 def configure_client(master_host, master_ip, port, client_host, ticket):
@@ -234,48 +288,42 @@ def configure_client(master_host, master_ip, port, client_host, ticket):
         call(request_command, shell=False)
         call(save_cert_command, shell=False)
         call(node_setup_command, shell=False)
-    except Exception as e:
-        logging.critical("Failed to promote. Error: \n{0}".format(e))
+    except Exception as err:
+        logging.critical("Failed to promote. Error: \n{0}".format(err))
+        raise
 
 
 if __name__ == '__main__':
-    (MASTER,
-     CLIENT,
-     MASTER_HOST,
-     PORT,
-     CLIENT_HOST,
-     API_USER,
-     API_PASSWORD,
-     ENABLE_GLOBAL,
-     DISABLE_CHECKER,
-     DISABLE_CONFD) = args_check(sys.argv[1:])
-    # Enable logging
+    # Setup logging
     logging.basicConfig(format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
                         datefmt='%m-%d %H:%M',
                         filename=LOG_FILE, filemode="w", level=logging.DEBUG)
-
-    if MASTER:
-        configure_master()
-
-    elif CLIENT:
-        # Ensure certificate directory exists
+    args = args_check(sys.argv[1:])
+    if args.mode == 'master':
+        configure_master(args.api_listener)
+    elif args.mode == 'client':
         create_dir(CERT_DIR)
-        # Ensure correct ownership
         chown(CERT_DIR, OWNER, GROUP)
-        # Get ticket generated for curret host on Icinga2 Master
-        ticket = get_ticket(MASTER_HOST,
-                            PORT,
-                            API_USER,
-                            API_PASSWORD,
-                            CLIENT_HOST)
+        port = PORT
+        if args.port:
+            port = args.port
+        # Request registry ticket
+        ticket = get_ticket(args.master_host,
+                            port,
+                            args.api_user,
+                            args.api_password,
+                            args.common_name)
         # Register client
-        configure_client(MASTER_HOST,
-                         PORT,
-                         CLIENT_HOST,
+        configure_client(args.master_host,
+                         args.port,
+                         args.common_name,
                          ticket)
-        if ENABLE_GLOBAL:
+
+        if args.enable_global:
             enable_global_templates(ZONE_FILE)
-        if DISABLE_CHECKER:
+        if args.disable_checker:
             disable_checker_feature()
-        if DISABLE_CONFD:
+        if args.disable_confd:
             disable_confd()
+        if args.add_debug_api:
+            configure_api_debug_user(args.debug_user_pass)
